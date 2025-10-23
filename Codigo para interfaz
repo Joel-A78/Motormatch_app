@@ -1,0 +1,169 @@
+import tensorflow as tf
+import numpy as np
+import sounddevice as sd
+import tkinter as tk
+import threading
+import time
+from PIL import Image, ImageTk
+
+# === CONFIGURACIÓN DEL MODELO ===
+interpreter = tf.lite.Interpreter(
+    model_path=r"C:/Users/djate/OneDrive/Escritorio/converted_tflite/soundclassifier_with_metadata.tflite")  # Cambiar ruta una vez descargado el modelo
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+labels = [
+    "Ruido de fondo",
+    "Gasolina - V4",
+    "Gasolina - V6",
+    "Gasolina - V8",
+    "Gasolina - V10",
+]
+
+FS = 44100
+DURACION = 10  # segundos
+
+# === INTERFAZ ===
+FONDO = "#357AE8"
+TITULO_COLOR = "#FFD700"
+TEXTO_COLOR = "#FFFFFF"
+BOTON_BG = "#FFFFFF"
+BOTON_FG = "#000000"
+
+root = tk.Tk()
+root.title("MotorMatch - Identificador de Motores")
+root.geometry("420x500")
+root.config(bg=FONDO)
+
+# --- Logo ---
+ruta_logo = r"C:/Users/djate/OneDrive/Escritorio/logo.jpg"
+try:
+    logo_image = Image.open(ruta_logo)
+    logo_image = logo_image.resize((120, 120), Image.Resampling.LANCZOS)
+    logo_photo = ImageTk.PhotoImage(logo_image)
+    logo_label = tk.Label(root, image=logo_photo, bg=FONDO)
+    logo_label.image = logo_photo
+    logo_label.pack(pady=5)
+except Exception as e:
+    print("Logo no encontrado:", e)
+
+tk.Label(
+    root,
+    text="MotorMatch",
+    font=("Segoe UI Black", 22, "bold"),
+    fg=TITULO_COLOR,
+    bg=FONDO,
+).pack(pady=5)
+tk.Label(
+    root,
+    text="Presiona para analizar el sonido del motor",
+    font=("Segoe UI", 12),
+    fg=TEXTO_COLOR,
+    bg=FONDO,
+).pack(pady=5)
+
+resultado_label = tk.Label(
+    root, text="", font=("Segoe UI", 12), fg=TEXTO_COLOR, bg=FONDO, justify="left"
+)
+resultado_label.pack(pady=10)
+
+# === Canvas para ondas de audio ===
+canvas_width = 350
+canvas_height = 80
+wave_canvas = tk.Canvas(
+    root, width=canvas_width, height=canvas_height, bg="black", highlightthickness=0
+)
+wave_canvas.pack(pady=10)
+wave_canvas.pack_forget()  # inicialmente oculto
+progress_label = tk.Label(
+    root, text="", font=("Segoe UI", 10), fg=TEXTO_COLOR, bg=FONDO
+)
+
+
+# === FUNCIONES ===
+def grabar_audio_stream():
+    esperado = input_details[0]["shape"][1]
+    audio = np.zeros(esperado, dtype=np.float32)
+
+    wave_canvas.pack(pady=10)
+    progress_label.pack()
+    wave_canvas.delete("all")
+    start_time = time.time()
+    idx = 0
+
+    def dibujar_ondas(buffer):
+        wave_canvas.delete("all")
+        mid_y = canvas_height // 2
+        step = max(1, len(buffer) // canvas_width)
+        for x in range(canvas_width):
+            sample = buffer[x * step] if x * step < len(buffer) else 0
+            y = int(np.clip(sample * 500, -canvas_height // 2, canvas_height // 2))
+            wave_canvas.create_line(x, mid_y - y, x, mid_y + y, fill="#FFD700")
+
+    def callback(indata, frames, time_info, status):
+        nonlocal idx
+        if status:
+            print(status)
+        n = min(len(audio) - idx, len(indata))
+        audio[idx : idx + n] = indata[:n, 0]
+        idx += n
+        elapsed = time.time() - start_time
+        porcentaje = min(elapsed / DURACION, 1.0)
+        progress_label.config(text=f"{int(porcentaje*100)}%")
+
+        # Dibujar últimas muestras para simular onda
+        mostrar = audio[max(0, idx - canvas_width) : idx]
+        dibujar_ondas(mostrar)
+        root.update_idletasks()
+
+    with sd.InputStream(samplerate=FS, channels=1, dtype="float32", callback=callback):
+        sd.sleep(int(DURACION * 1000))
+
+    wave_canvas.pack_forget()
+    progress_label.pack_forget()
+    return np.expand_dims(audio, axis=0).astype(np.float32)
+
+
+def analizar_hilo():
+    def task():
+        resultado_label.config(text="Grabando...", font=("Arial", 12, "bold"))
+        audio = grabar_audio_stream()
+        interpreter.set_tensor(input_details[0]["index"], audio)
+        interpreter.invoke()
+        output_data = interpreter.get_tensor(output_details[0]["index"])[0]
+
+        # Ordenar resultados por confianza (de mayor a menor)
+        indices_ordenados = np.argsort(output_data)[::-1]
+        resultado_texto = "Resultados del análisis:\n\n"
+
+        for i in indices_ordenados:
+            confianza = output_data[i] * 100
+            if confianza > 5:  # solo mostrar resultados relevantes
+                resultado_texto += f"• {labels[i]}: {confianza:.2f}%\n"
+
+        # Si solo hay ruido de fondo dominante
+        if output_data[0] > 0.8:
+            resultado_texto = "No se detectó motor, solo ruido de fondo."
+
+        resultado_label.config(text=resultado_texto, font=("Segoe UI", 12, "bold"))
+
+    threading.Thread(target=task).start()
+
+
+tk.Button(
+    root,
+    text="🎤 Grabar y Analizar",
+    font=("Segoe UI", 12, "bold"),
+    bg=BOTON_BG,
+    fg=BOTON_FG,
+    relief="raised",
+    bd=3,
+    command=analizar_hilo,
+).pack(pady=15)
+
+tk.Label(
+    root, text="Versión TensorFlow Lite", font=("Segoe UI", 10), fg="#D3D3D3", bg=FONDO
+).pack(side="bottom", pady=10)
+
+root.mainloop()
