@@ -6,3 +6,5 @@ Primero se deben descargar los archivos adjuntos al repositorio para que el cód
 "logo.ico"
 "logo.png"
 "logo.jpg"
+Si solo se desea ver como funciona se puede ver el sigueinte video:
+https://youtu.be/hl-Ir2T5_AM 
